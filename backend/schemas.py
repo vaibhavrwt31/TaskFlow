@@ -7,11 +7,21 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
 
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str
+    email: EmailStr
+
+
+# =========================
+# USER PROFILE UPDATE
+# =========================
+
+class UserUpdate(BaseModel):
+    name: str = Field(..., min_length=1)
     email: EmailStr
 
 
@@ -55,6 +65,8 @@ class TaskResponse(BaseModel):
     priority: str
     due_date: Optional[str]
     status: str
+
+
 class TaskStatusUpdate(BaseModel):
     status: str
 
@@ -73,7 +85,12 @@ class TaskStatusUpdate(BaseModel):
             )
 
         return value
-    
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    
+class QuickTaskCreate(BaseModel):
+    description: str = Field(..., min_length=1)
+    project_id: int

@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta, timezone
 
 from jose import jwt, JWTError
@@ -7,6 +8,7 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from passlib.context import CryptContext
 
 from .database import SessionLocal, engine, Base
@@ -14,6 +16,20 @@ from . import models, schemas
 
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
+from .algorithms import (
+    prioritize_tasks,
+    prioritize_tasks_by_urgency,
+    detect_due_date,
+    parse_quick_task,
+    insertion_sort,
+    binary_search,
+    linear_search,
+    insertion_sort_count,
+    binary_search_count,
+    linear_search_count,
+    get_recommended_task
+)
+from datetime import date
 
 
 # =========================
@@ -69,6 +85,8 @@ app = FastAPI(
     description="A task management API built with FastAPI and SQLAlchemy",
     version="1.0.0"
 )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -76,9 +94,39 @@ app.add_middleware(
         "http://localhost:5174",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=[
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS"
+    ],
+    allow_headers=[
+        "Authorization",
+        "Content-Type"
+    ],
 )
+
+# =========================
+# REQUEST TIMING MIDDLEWARE
+# =========================
+
+@app.middleware("http")
+async def request_logger(request, call_next):
+    start_time = time.perf_counter()
+
+    response = await call_next(request)
+
+    process_time = (time.perf_counter() - start_time) * 1000
+
+    print(
+        f"{request.method} {request.url.path} "
+        f"- {process_time:.2f} ms"
+    )
+
+    return response
+
 
 # =========================
 # AUTH FUNCTIONS
@@ -213,6 +261,45 @@ def get_users(
 
 
 # =========================
+# UPDATE MY PROFILE
+# =========================
+
+@app.put(
+    "/users/me",
+    response_model=schemas.UserResponse
+)
+def update_my_profile(
+    user_update: schemas.UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Check if another user already has this email
+    existing_user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == user_update.email,
+            models.User.id != current_user.id
+        )
+        .first()
+    )
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+    # Update current user's profile
+    current_user.name = user_update.name
+    current_user.email = user_update.email
+
+    db.commit()
+    db.refresh(current_user)
+
+    return current_user
+
+
+# =========================
 # LOGIN
 # =========================
 
@@ -248,6 +335,7 @@ def login(
         "access_token": access_token,
         "token_type": "bearer"
     }
+
 
 # =========================
 # PROJECTS
@@ -351,6 +439,7 @@ def update_project(
 
     return existing_project
 
+
 @app.delete("/projects/{project_id}")
 def delete_project(
     project_id: int,
@@ -380,6 +469,7 @@ def delete_project(
     return {
         "message": "Project deleted successfully"
     }
+
 
 # =========================
 # TASKS
@@ -431,17 +521,393 @@ def create_task(
     response_model=list[schemas.TaskResponse]
 )
 def get_tasks(
+    sort: str = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     tasks = (
         db.query(models.Task)
         .join(models.Project)
-        .filter(models.Project.owner_id == current_user.id)
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
         .all()
     )
 
-    return tasks
+    # Normal task list
+    if sort is None:
+        return tasks
+
+    # Section 2: insertion sort by priority
+    if sort == "priority":
+
+        priority_rank = {
+            "low": 1,
+            "medium": 2,
+            "high": 3
+        }
+
+        records = [
+            {
+                "id": task.id,
+                "project_id": task.project_id,
+                "title": task.title,
+                "priority": task.priority,
+                "due_date": task.due_date,
+                "status": task.status,
+                "_priority_rank": priority_rank.get(
+                    task.priority,
+                    1
+                )
+            }
+            for task in tasks
+        ]
+
+        # Our own insertion sort
+        insertion_sort(records, "_priority_rank")
+
+        # Highest priority first
+        records.reverse()
+
+        # Remove internal sorting field
+        for record in records:
+            del record["_priority_rank"]
+
+        return records
+
+    raise HTTPException(
+        status_code=400,
+        detail="Unsupported sort option"
+    )
+# =========================
+# PRIORITIZED TASKS
+# =========================
+
+@app.get(
+    "/tasks/prioritized",
+    response_model=list[schemas.TaskResponse]
+)
+def get_prioritized_tasks(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    tasks = (
+        db.query(models.Task)
+        .join(models.Project)
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
+        .all()
+    )
+
+    prioritized = prioritize_tasks(tasks)
+
+    return prioritized
+
+
+# =========================
+# URGENT TASKS
+# =========================
+
+@app.get(
+    "/tasks/urgent",
+    response_model=list[schemas.TaskResponse]
+)
+def get_urgent_tasks(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    tasks = (
+        db.query(models.Task)
+        .join(models.Project)
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
+        .all()
+    )
+
+    urgent_tasks = prioritize_tasks_by_urgency(tasks)
+
+    return urgent_tasks
+
+
+# =========================
+# RECOMMENDED TASK
+# =========================
+
+@app.get(
+    "/tasks/recommended",
+    response_model=schemas.TaskResponse
+)
+def get_recommended_task_endpoint(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    tasks = (
+        db.query(models.Task)
+        .join(models.Project)
+        .filter(
+            models.Project.owner_id == current_user.id,
+            models.Task.status != "completed"
+        )
+        .all()
+    )
+
+    recommended_task = get_recommended_task(tasks)
+
+    if not recommended_task:
+        raise HTTPException(
+            status_code=404,
+            detail="No pending tasks found"
+        )
+
+    return recommended_task
+
+
+
+# =========================
+# TASK STATISTICS
+# =========================
+
+@app.get("/tasks/statistics")
+def get_task_statistics(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    statistics = (
+        db.query(
+            models.Project.id.label("project_id"),
+            models.Project.name.label("project_name"),
+            func.count(models.Task.id).label("task_count")
+        )
+        .outerjoin(
+            models.Task,
+            models.Task.project_id == models.Project.id
+        )
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
+        .group_by(
+            models.Project.id,
+            models.Project.name
+        )
+        .all()
+    )
+
+    return [
+        {
+            "project_id": row.project_id,
+            "project_name": row.project_name,
+            "task_count": row.task_count
+        }
+        for row in statistics
+    ]
+# =========================
+# SEARCH TASK
+# =========================
+
+@app.get(
+    "/tasks/search",
+    response_model=schemas.TaskResponse
+)
+def search_task(
+    title: str,
+    algo: str = "binary",
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Get current user's tasks from the database
+    tasks = (
+        db.query(models.Task)
+        .join(models.Project)
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
+        .all()
+    )
+
+    # Build search records
+    records = [
+        {
+            "id": task.id,
+            "title": task.title
+        }
+        for task in tasks
+    ]
+
+    # =========================
+    # BINARY SEARCH
+    # =========================
+
+    if algo == "binary":
+
+        # Binary search requires sorted records
+        insertion_sort(records, "title")
+
+        index = binary_search(
+            records,
+            title,
+            "title"
+        )
+
+    # =========================
+    # LINEAR SEARCH
+    # =========================
+
+    elif algo == "linear":
+
+        index = linear_search(
+            records,
+            title,
+            "title"
+        )
+
+    # =========================
+    # INVALID ALGORITHM
+    # =========================
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported search algorithm. Use 'binary' or 'linear'."
+        )
+
+    # =========================
+    # TASK NOT FOUND
+    # =========================
+
+    if index == -1:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found"
+        )
+
+    # Get actual task ID from search result
+    task_id = records[index]["id"]
+
+    # =========================
+    # GET ACTUAL TASK
+    # =========================
+
+    task = (
+        db.query(models.Task)
+        .filter(
+            models.Task.id == task_id
+        )
+        .first()
+    )
+
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found"
+        )
+
+    return task
+
+
+# =========================
+# ALGORITHM BENCHMARK
+# =========================
+
+@app.get("/tasks/benchmark")
+def benchmark_algorithms(
+    title: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    tasks = (
+        db.query(models.Task)
+        .join(models.Project)
+        .filter(
+            models.Project.owner_id == current_user.id
+        )
+        .all()
+    )
+
+    records = [
+        {
+            "id": task.id,
+            "title": task.title
+        }
+        for task in tasks
+    ]
+
+    # -------------------------
+    # INSERTION SORT
+    # -------------------------
+
+    insertion_records = records.copy()
+
+    insertion_start = time.perf_counter()
+
+    insertion_comparisons = insertion_sort_count(
+        insertion_records,
+        "title"
+    )
+
+    insertion_time = (
+        time.perf_counter() - insertion_start
+    ) * 1000
+
+    # -------------------------
+    # BINARY SEARCH
+    # -------------------------
+
+    binary_start = time.perf_counter()
+
+    binary_result = binary_search_count(
+        insertion_records,
+        title,
+        "title"
+    )
+
+    binary_time = (
+        time.perf_counter() - binary_start
+    ) * 1000
+
+    # -------------------------
+    # LINEAR SEARCH
+    # -------------------------
+
+    linear_start = time.perf_counter()
+
+    linear_result = linear_search_count(
+        records,
+        title,
+        "title"
+    )
+
+    linear_time = (
+        time.perf_counter() - linear_start
+    ) * 1000
+
+    return {
+        "target": title,
+        "total_records": len(records),
+
+        "insertion_sort": {
+            "comparisons": insertion_comparisons,
+            "time_ms": round(insertion_time, 4)
+        },
+
+        "binary_search": {
+            "index": binary_result["index"],
+            "comparisons": binary_result["comparison_count"],
+            "time_ms": round(binary_time, 4)
+        },
+
+        "linear_search": {
+            "index": linear_result["index"],
+            "comparisons": linear_result["comparison_count"],
+            "time_ms": round(linear_time, 4)
+        }
+    }
+    
+
+# =========================
+# GET SINGLE TASK
+# =========================
 
 @app.get(
     "/tasks/{task_id}",
@@ -473,6 +939,11 @@ def get_task(
         )
 
     return task
+
+
+# =========================
+# UPDATE TASK
+# =========================
 
 @app.put(
     "/tasks/{task_id}",
@@ -530,6 +1001,11 @@ def update_task(
 
     return existing_task
 
+
+# =========================
+# DELETE TASK
+# =========================
+
 @app.delete("/tasks/{task_id}")
 def delete_task(
     task_id: int,
@@ -562,6 +1038,11 @@ def delete_task(
     return {
         "message": "Task deleted successfully"
     }
+
+
+# =========================
+# UPDATE TASK STATUS
+# =========================
 
 @app.patch(
     "/tasks/{task_id}/status",
@@ -599,3 +1080,67 @@ def update_task_status(
     db.refresh(task)
 
     return task
+
+# =========================
+# AI QUICK-ADD TASK
+# =========================
+
+@app.post(
+    "/tasks/quick-add",
+    response_model=schemas.TaskResponse,
+    status_code=201
+)
+def quick_add_task(
+    quick_task: schemas.QuickTaskCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Check whether project exists
+    project = db.query(models.Project).filter(
+        models.Project.id == quick_task.project_id
+    ).first()
+
+    if not project:
+        raise HTTPException(
+            status_code=422,
+            detail="Project does not exist"
+        )
+
+    # Check project ownership
+    if project.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to add tasks to this project"
+        )
+
+    # =========================
+    # ROLE-BASED PROMPT
+    # =========================
+
+    system_prompt = """
+    You are a task parsing assistant.
+    Extract the task title, priority and due date hint
+    from the user's task description.
+    """
+
+    user_prompt = quick_task.description
+
+    # Mock parser
+    parsed_task = parse_quick_task(user_prompt)
+
+    # =========================
+    # CREATE TASK
+    # =========================
+
+    new_task = models.Task(
+        project_id=quick_task.project_id,
+        title=parsed_task["title"],
+        priority=parsed_task["priority"],
+        due_date=parsed_task["due_date_hint"]
+    )
+
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+
+    return new_task
