@@ -2,3 +2,15 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 pydantic
+python-jose[cryptography]
+passlib
+bcrypt
+email-validator
+python-multipart
+websockets
+typing-extensions
+python-dotenv
+httptools
+anyio
+watchfiles
+starlette
